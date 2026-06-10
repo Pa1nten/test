@@ -1,0 +1,686 @@
+1. Что входит в 3 нормальную форму (3НФ)
+Проверка	Что делать
+
+1НФ	Данные атомарны (нет списков в одной ячейке). Все строки уникальны (есть первичный ключ — PRIMARY KEY).
+
+2НФ	Нет частичной зависимости (все поля зависят от ВСЕГО первичного ключа). Это важно только для таблиц с составным ключом.
+
+3НФ	Нет транзитивной зависимости (неключевые поля не зависят от других неключевых).
+"""
+
+Пример нарушения 3НФ:
+
+sql
+-- ❌ ПЛОХО (цена зависит от бренда, а не от товара)
+CREATE TABLE products (
+    id SERIAL PRIMARY KEY,
+    name TEXT,
+    brand TEXT,
+    brand_discount NUMERIC -- Это поле зависит от brand, а не от id
+);
+sql
+-- ✅ ХОРОШО (вынесли бренд в отдельную таблицу)
+CREATE TABLE brands (id SERIAL PRIMARY KEY, name TEXT, discount NUMERIC);
+CREATE TABLE products (id SERIAL PRIMARY KEY, brand_id INT REFERENCES brands(id), name TEXT);
+
+2. Шпаргалка по созданию таблиц (PostgreSQL)
+Базовый шаблон для твоей задачи:
+
+sql
+-- Создание таблицы
+CREATE TABLE users (
+    -- Поле-счетчик (аналог автоинкремента)
+    id SERIAL PRIMARY KEY,
+
+    -- Строки
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role VARCHAR(20) DEFAULT 'client' CHECK (role IN ('guest', 'client', 'manager', 'admin')),
+
+    -- Время
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Таблица с внешним ключом (ссылка на другую таблицу)
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- ON DELETE CASCADE часто удобно для заказов
+    order_date DATE DEFAULT CURRENT_DATE,
+    total NUMERIC(10, 2) CHECK (total >= 0)
+);
+
+-- Таблица со составным ключом (многие ко многим: товары в заказе)
+CREATE TABLE order_items (
+    order_id INT REFERENCES orders(id) ON DELETE CASCADE,
+    product_id INT REFERENCES products(id),
+    quantity INT DEFAULT 1,
+    PRIMARY KEY (order_id, product_id) -- Составной первичный ключ
+);
+Ключевые фразы для запоминания:
+
+SERIAL = целое число, которое растет само (+1).
+
+PRIMARY KEY = главный идентификатор (уникальный и не пустой).
+
+REFERENCES table(id) = внешний ключ (связь с другой таблицей).
+
+ON DELETE CASCADE = если удалили родителя, удали и детей (например, удалили заказ -> удалились позиции в order_items).
+
+3. Шпаргалка по ролям и правам (RBAC) из твоего задания
+Запоминай как пирамиду:
+
+Гость (Не авторизован): Только SELECT из товаров (без фильтров).
+
+Клиент (Авторизован): SELECT товаров + INSERT/SELECT своих заказов.
+
+Менеджер: Все что у Клиента + SELECT ВСЕХ заказов + UPDATE статусов + поиск/фильтр.
+
+Админ: Всё + INSERT/UPDATE/DELETE товаров и любых заказов.
+
+Как это будет в коде Python (логика):
+
+python
+# Псевдокод проверки доступа
+def can_edit_product(user):
+    return user.role == 'admin'
+
+def can_search(user):
+    return user.role in ['manager', 'admin']
+
+4. Шпаргалка для импорта данных из файлов (твоя задача)
+По заданию у тебя есть файлы (import).
+
+Подготовка: Открой CSV/XLSX файл, посмотри на заголовки. Переименуй колонки в файле, чтобы они совпадали с именами колонок в БД (например, Артикул -> sku).
+
+Очистка: Удали пустые строки, проверь, что нет дубликатов первичных ключей.
+
+Скрипт импорта (Python):
+
+python
+import psycopg2
+import csv
+
+conn = psycopg2.connect("dbname=shop user=postgres password=123")
+cur = conn.cursor()
+
+with open('products.csv', 'r', encoding='utf-8') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        # Используй %s для подстановки (защита от SQL инъекций)
+        cur.execute(
+            "INSERT INTO products (name, price, stock) VALUES (%s, %s, %s)",
+            (row['name'], row['price'], row['stock'])
+        )
+conn.commit()
+cur.close()
+conn.close()
+
+5. Установка библиотек для Python
+Открой терминал (командную строку) и выполни:
+
+bash
+pip install psycopg2-binary pandas
+psycopg2-binary — чтобы Python подключался к PostgreSQL. Это главное.
+
+pandas — чтобы было удобно читать Excel и CSV файлы (твои import файлы).
+
+Проверка подключения (самый простой код):
+
+python
+import psycopg2
+try:
+    conn = psycopg2.connect("host=localhost dbname=postgres user=postgres")
+    print("Успех!")
+except Exception as e:
+    print(f"Ошибка: {e}")
+
+6. Итоговая структура БД для твоей задачи
+Вот как это должно выглядеть в коде (скомбинируй со шпаргалкой 2):
+
+sql
+-- 1. Справочник ролей (не обязательно, можно ENUM, но таблица надежнее)
+CREATE TABLE roles (id SERIAL PRIMARY KEY, name TEXT UNIQUE);
+INSERT INTO roles (name) VALUES ('guest'), ('client'), ('manager'), ('admin');
+
+-- 2. Пользователи (логины и пароли из задания)
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    login VARCHAR(50) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL, -- Храни хэш!
+    role_id INT REFERENCES roles(id)
+);
+
+-- 3. Товары (Обувь)
+CREATE TABLE products (
+    id SERIAL PRIMARY KEY,
+    article VARCHAR(50) UNIQUE,
+    name VARCHAR(255) NOT NULL,
+    size DECIMAL(5,1), -- размер обуви
+    price DECIMAL(10,2),
+    stock INT DEFAULT 0 -- Остаток на складе (это самое важное в задаче!)
+);
+
+-- 4. Заказы
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id),
+    status VARCHAR(20) DEFAULT 'new', -- new, paid, shipped
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 5. Состав заказа (связь многие-ко-многим)
+CREATE TABLE order_products (
+    order_id INT REFERENCES orders(id) ON DELETE CASCADE,
+    product_id INT REFERENCES products(id),
+    quantity INT NOT NULL CHECK (quantity > 0)
+);
+Что сдавать преподавателю:
+
+ER-диаграмму (PDF). Нарисуй в draw.io (бесплатно) и экспортируй в PDF. Покажи таблицы users, products, orders и стрелки между ними.
+
+Скрипт БД (файл .sql) — текст, который я написал выше.
+
+Код Python — который читает твои файлы и вставляет данные через psycopg2.
+
+Шпаргалка 1: Блок-схема по ГОСТ 19.701-90
+Для твоего задания нужна блок-схема алгоритма работы приложения.
+
+Основные символы (которые тебе понадобятся):
+Символ	Название	Что означает	Когда использовать
+⬭	Терминатор	Начало/Конец	Пуск, Останов
+◇	Решение	Ветвление, условие	"Логин верен?", "Товар на складе?"
+▭	Процесс	Действие	Запрос к БД, отображение таблицы
+⬭ с бумагой	Документ	Вывод на печать	(Не нужно в твоем случае)
+/▭/	Предопределенный процесс	Вызов подпрограммы	"Авторизация", "Показать товары"
+⟷	Соединитель	Переход на другую страницу	Между страницами блок-схемы
+
+Готовая блок-схема (текстовое описание для рисования):
+text
+[Начало]
+    ↓
+[Отображение окна входа] ←─────────────┐
+    ↓                                  │
+◇ [Есть ли логин/пароль?]              │
+    ↓                          Нет     │
+    ├───Да──────────────────┐           │
+    ↓                       ↓           │
+[Запрос к БД users]    [Вход как гость] │
+    ↓                       ↓           │
+◇ [Данные верны?]       [Роль = guest]  │
+    ↓               Нет        ↓        │
+    ├───Да──────────┘          ↓        │
+    ↓                          ↓        │
+[Установить роль         [Показать      │
+ client/manager/admin]     товары]      │
+    ↓                          ↓        │
+[Показать интерфейс         [Кнопка     │
+ пользователя]               "Войти"?]──┘
+    ↓                          ↓
+[Кнопка "Выйти"?]──────────────┘
+    ↓
+[Конец]
+Как оформить в PDF:
+
+Открой draw.io (бесплатно, онлайн)
+
+Выбери шаблон "Блок-схема"
+
+В настройках выбери "ГОСТ 19.701-90" (или просто используй стандартные фигуры выше)
+
+Экспорт → PDF
+
+Установка дополнительных библиотек:
+bash
+pip install flask psycopg2-binary
+Структура проекта:
+text
+my_app/
+│
+├── app.py              # Главный файл (Python)
+├── templates/          # Папка с HTML-шаблонами
+│   ├── base.html       # Общий шаблон (шапка, меню)
+│   ├── login.html      # Окно входа
+│   ├── products.html   # Список товаров
+│   └── dashboard.html  # Интерфейс пользователя
+├── static/             # Папка со статикой
+│   ├── style.css       # Единый стиль (руководство по стилю)
+│   ├── logo.png        # Логотип компании
+│   └── picture.png     # Картинка-заглушка
+└── database.db         # (или подключение к PostgreSQL)
+
+Самый простой app.py (скелет):
+python
+from flask import Flask, render_template, request, redirect, session
+import psycopg2
+
+app = Flask(__name__)
+app.secret_key = 'tvoi_sekretniy_klyuch'  # Для сессий
+
+# Подключение к БД
+def get_db():
+    return psycopg2.connect(
+        host="localhost",
+        database="shop",
+        user="postgres",
+        password="123"
+    )
+
+@app.route('/')
+def login_page():
+    return render_template('login.html')
+
+@app.route('/auth', methods=['POST'])
+def auth():
+    login = request.form['login']
+    password = request.form['password']
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, role, full_name FROM users WHERE login=%s AND password=%s",
+        (login, password)
+    )
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if user:
+        session['user_id'] = user[0]
+        session['role'] = user[1]
+        session['full_name'] = user[2]
+        return redirect('/dashboard')
+    else:
+        return "Ошибка входа", 401
+
+@app.route('/guest')
+def guest_view():
+    session['role'] = 'guest'
+    session['full_name'] = 'Гость'
+    return redirect('/products')
+
+@app.route('/products')
+def show_products():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT p.name, p.price, p.discount, p.stock, p.image,
+               c.name as category, b.name as brand
+        FROM products p
+        LEFT JOIN categories c ON p.category_id = c.id
+        LEFT JOIN brands b ON p.brand_id = b.id
+    """)
+    products = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return render_template('products.html',
+                         products=products,
+                         user_role=session.get('role', 'guest'),
+                         user_name=session.get('full_name', 'Гость'))
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/')
+
+if __name__ == '__main__':
+    app.run(debug=True)
+
+Шпаргалка 3: Единый стиль (CSS — руководство по стилю)
+Создай файл static/style.css:
+
+css
+/* Общие цвета (из задания - Приложение 3) */
+:root {
+    --primary-color: #2E8B57;    /* Зеленый для скидок >15% */
+    --danger-color: #ff0000;      /* Красный для зачеркнутой цены */
+    --out-of-stock: #add8e6;      /* Голубой для товаров не в наличии */
+    --background: #f5f5f5;
+    --text-dark: #333;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    background-color: var(--background);
+}
+
+/* Шапка с логотипом и ФИО */
+.header {
+    background: white;
+    padding: 15px 30px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.logo {
+    height: 50px;
+}
+
+.user-info {
+    font-weight: bold;
+    color: var(--text-dark);
+}
+
+/* Таблица товаров */
+.products-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+}
+
+.products-table th,
+.products-table td {
+    border: 1px solid #ddd;
+    padding: 12px;
+    text-align: left;
+}
+
+.products-table th {
+    background-color: var(--primary-color);
+    color: white;
+}
+
+/* Подсветка строки при скидке >15% */
+.discount-highlight {
+    background-color: #2E8B57 !important;
+    color: white;
+}
+
+/* Строка товара которого нет на складе */
+.out-of-stock-row {
+    background-color: #add8e6 !important;
+}
+
+/* Зачеркнутая цена (старая) */
+.old-price {
+    text-decoration: line-through;
+    color: red;
+    margin-right: 10px;
+}
+
+/* Новая цена */
+.new-price {
+    color: black;
+    font-weight: bold;
+}
+
+/* Картинка-заглушка */
+.product-image {
+    width: 80px;
+    height: 80px;
+    object-fit: cover;
+}
+
+/* Кнопки */
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.btn-primary {
+    background-color: var(--primary-color);
+    color: white;
+}
+
+.btn-logout {
+    background-color: #dc3545;
+    color: white;
+}
+
+Шпаргалка 4: HTML-шаблон с условиями (подсветка строк)
+Файл templates/products.html:
+
+html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Список товаров - Обувной магазин</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="header">
+        <img src="{{ url_for('static', filename='logo.png') }}" class="logo" alt="Логотип">
+        <div class="user-info">
+            {{ user_name }}
+            {% if user_role != 'guest' %}
+                <a href="/logout" class="btn btn-logout">Выйти</a>
+            {% else %}
+                <a href="/" class="btn btn-primary">Войти</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <h1>Каталог обуви</h1>
+
+    <table class="products-table">
+        <thead>
+            <tr>
+                <th>Фото</th><th>Наименование</th><th>Категория</th>
+                <th>Производитель</th><th>Цена</th><th>Скидка</th><th>Остаток</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for product in products %}
+            <tr class="
+                {% if product[3] == 0 %}out-of-stock-row
+                {% elif product[2] > 15 %}discount-highlight
+                {% endif %}
+            ">
+                <td>
+                    <img src="{{ url_for('static', filename='product_images/' + product[4]) if product[4] else url_for('static', filename='picture.png') }}"
+                         class="product-image"
+                         onerror="this.src='{{ url_for('static', filename='picture.png') }}'">
+                </td>
+                <td>{{ product[0] }}</td>
+                <td>{{ product[5] }}</td>
+                <td>{{ product[6] }}</td>
+                <td>
+                    {% if product[2] > 0 %}
+                        <span class="old-price">{{ product[1] }} руб.</span>
+                        <span class="new-price">{{ product[1] * (100 - product[2]) / 100 }} руб.</span>
+                    {% else %}
+                        {{ product[1] }} руб.
+                    {% endif %}
+                </td>
+                <td>{{ product[2] }}%</td>
+                <td>{{ product[3] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>
+
+Шпаргалка 5: Окно входа (login.html)
+Файл templates/login.html:
+
+html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Вход в систему</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="header">
+        <img src="{{ url_for('static', filename='logo.png') }}" class="logo">
+    </div>
+
+    <div class="login-container">
+        <h2>Авторизация</h2>
+        <form method="POST" action="/auth">
+            <input type="text" name="login" placeholder="Логин" required><br>
+            <input type="password" name="password" placeholder="Пароль" required><br>
+            <button type="submit" class="btn btn-primary">Войти</button>
+        </form>
+        <a href="/guest">Продолжить как гость</a>
+    </div>
+</body>
+</html>
+
+Добавь в style.css:
+
+css
+.login-container {
+    width: 300px;
+    margin: 100px auto;
+    padding: 30px;
+    background: white;
+    border-radius: 8px;
+    text-align: center;
+}
+
+.login-container input {
+    width: 100%;
+    padding: 10px;
+    margin: 10px 0;
+    border: 1px solid #ddd;
+}
+
+Шпаргалка 6: Соглашение об именовании (Python = snake_case)
+Что именуем	Как пишем	Пример
+Переменные	snake_case	user_name, product_price
+Функции	snake_case	get_products(), calculate_discount()
+Классы	PascalCase	ProductManager, DatabaseConnector
+Константы	UPPER_CASE	MAX_DISCOUNT = 15
+HTML id/class	kebab-case	product-list, btn-primary
+Пример правильного кода:
+
+python
+# ✅ ХОРОШО
+user_full_name = "Иван Петров"
+def calculate_discount_price(original_price, discount_percent):
+    return original_price * (100 - discount_percent) / 100
+
+# ❌ ПЛОХО
+userfullname = "..."  # нет разделения
+def calc(x, y):       # имя не отражает назначение
+
+Шпаргалка 7: Отладка и скриншоты (документ docx)
+Что нужно проверить и сфотографировать для docx:
+
+Окно входа (страница с полями логин/пароль и кнопкой "Гость")
+
+Вход клиента (показать, что ФИО отображается в правом верхнем углу)
+
+Вход менеджера (интерфейс должен отличаться — хотя бы надписью)
+
+Вход администратора
+
+Режим гостя (без кнопки "Выйти", только просмотр)
+
+Таблица товаров где:
+
+Товар со скидкой 20% имеет фон #2E8B57
+
+Товар со скидкой имеет старую цену красную зачеркнутую
+
+Товар с остатком 0 имеет голубой фон
+
+Нет картинки → отображается picture.png
+
+Кнопка "Выйти" работает и возвращает на окно входа
+
+Как сделать скриншоты:
+
+Win: Win + Shift + S (фрагмент)
+
+Вставить в Word: Ctrl + V
+
+Подписать каждый скриншот (например, "Рисунок 1 — Окно входа")
+
+Шпаргалка 8: Быстрый старт за 5 минут
+bash
+# 1. Создай папку проекта
+mkdir my_shop && cd my_shop
+
+# 2. Установи библиотеки
+pip install flask psycopg2-binary
+
+# 3. Создай папки
+mkdir templates static
+mkdir static/product_images
+
+# 4. Скопируй код из шпаргалок в файлы:
+#    app.py, templates/login.html, templates/products.html, static/style.css
+
+# 5. Положи логотип в static/logo.png
+#    Положи заглушку в static/picture.png
+
+# 6. Запусти
+python app.py
+
+# 7. Открой браузер → http://localhost:5000
+Важно: Перед запуском убедись, что PostgreSQL запущен и таблица users содержит хотя бы одного пользователя с полями login, password, role, full_name.
+
+Все шпаргалки готовы. Копируй код, вставляй и запускай. Удачи с модулем!
+
+1. Разные интерфейсы для разных ролей
+В шпаргалке я показал общую таблицу для всех. А по заданию нужно:
+
+Гость и клиент — только просмотр (без фильтров)
+
+Менеджер — добавляются кнопки "Фильтр", "Сортировка", "Поиск"
+
+Администратор — кнопки "Добавить", "Редактировать", "Удалить" товар
+
+Как это добавить (просто):
+
+В products.html добавь проверку роли:
+
+html
+{% if user_role == 'manager' or user_role == 'admin' %}
+    <div class="toolbar">
+        <input type="text" placeholder="Поиск...">
+        <button>Фильтр</button>
+        <button>Сортировка</button>
+    </div>
+{% endif %}
+
+{% if user_role == 'admin' %}
+    <div class="admin-panel">
+        <button class="btn btn-primary">➕ Добавить товар</button>
+        <button class="btn btn-warning">✏️ Редактировать</button>
+        <button class="btn btn-danger">🗑️ Удалить</button>
+    </div>
+{% endif %}
+
+2. Функционал менеджера (фильтрация, сортировка, поиск)
+В app.py добавишь обработку GET-параметров:
+
+python
+@app.route('/products')
+def show_products():
+    search = request.args.get('search', '')
+    sort_by = request.args.get('sort', 'name')
+    category = request.args.get('category', '')
+
+    query = "SELECT * FROM products WHERE name LIKE %s"
+    params = [f'%{search}%']
+
+    if category:
+        query += " AND category_id = %s"
+        params.append(category)
+
+    query += f" ORDER BY {sort_by}"
+
+    # ... выполнение запроса
+
+
+
+
+
+
+
+
